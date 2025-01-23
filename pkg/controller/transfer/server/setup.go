@@ -16,6 +16,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	svcsdk "github.com/aws/aws-sdk-go/service/transfer"
@@ -27,11 +29,14 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/pkg/resource"
+	"github.com/google/go-cmp/cmp"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	svcapitypes "github.com/crossplane-contrib/provider-aws/apis/transfer/v1alpha1"
 	"github.com/crossplane-contrib/provider-aws/apis/v1alpha1"
+	"github.com/crossplane-contrib/provider-aws/pkg/controller/transfer/utils"
 	"github.com/crossplane-contrib/provider-aws/pkg/features"
 	"github.com/crossplane-contrib/provider-aws/pkg/utils/pointer"
 	custommanaged "github.com/crossplane-contrib/provider-aws/pkg/utils/reconciler/managed"
@@ -185,4 +190,157 @@ func (c *custom) DescribeVpcEndpoint(obj *svcsdk.DescribeServerOutput) (dnsEntri
 		return describeEndpointOutput.VpcEndpoints, nil
 	}
 	return []*ec2.VpcEndpoint{}, nil
+}
+
+func isUpToDate(_ context.Context, cr *svcapitypes.Server, cur *svcsdk.DescribeServerOutput) (bool, string, error) {
+	in := cr.Spec.ForProvider
+	out := cur.Server
+
+	if isNotUpToDate(in, out) {
+		return false, "", nil
+	}
+
+	return true, "", nil
+
+}
+
+func isNotUpToDate(in svcapitypes.ServerParameters, out *svcsdk.DescribedServer) bool { //nolint:gocyclo
+	if !cmp.Equal(in.Certificate, out.Certificate) {
+		return true
+	}
+
+	if !cmp.Equal(in.Domain, out.Domain) {
+		return true
+	}
+
+	if !cmp.Equal(in.EndpointType, out.EndpointType) {
+		return true
+	}
+
+	if !cmp.Equal(in.IdentityProviderType, out.IdentityProviderType) {
+		return true
+	}
+
+	if !cmp.Equal(in.LoggingRole, out.LoggingRole) {
+		return true
+	}
+
+	if !cmp.Equal(in.PostAuthenticationLoginBanner, out.PostAuthenticationLoginBanner) {
+		return true
+	}
+
+	if !cmp.Equal(in.PreAuthenticationLoginBanner, out.PreAuthenticationLoginBanner) {
+		return true
+	}
+
+	if !cmp.Equal(in.SecurityPolicyName, out.SecurityPolicyName) {
+		return true
+	}
+
+	if !cmp.Equal(in.StructuredLogDestinations, out.StructuredLogDestinations) {
+		return true
+	}
+
+	if !isIdentityProviderDetailsUpToDate(in.IdentityProviderDetails, out.IdentityProviderDetails) {
+		return true
+	}
+
+	if !isProtocolDetailsUpToDate(in.ProtocolDetails, out.ProtocolDetails) {
+		return true
+	}
+
+	if !isCustomEndpointUpToDate(in.CustomEndpointDetails, out.EndpointDetails) {
+		return true
+	}
+
+	if !isWorkflowDetailsUpToDate(in.WorkflowDetails, out.WorkflowDetails) {
+		return true
+	}
+
+	if upToDate, _, _ := utils.DiffTags(in.Tags, out.Tags); !upToDate {
+		return true
+	}
+
+	return false
+}
+
+func isIdentityProviderDetailsUpToDate(in *svcapitypes.IdentityProviderDetails, out *svcsdk.IdentityProviderDetails) bool {
+	if !cmp.Equal(in.DirectoryID, out.DirectoryId) {
+		return false
+	}
+	if !cmp.Equal(in.Function, out.Function) {
+		return false
+	}
+	if !cmp.Equal(in.InvocationRole, out.InvocationRole) {
+		return false
+	}
+	if !cmp.Equal(in.SftpAuthenticationMethods, out.SftpAuthenticationMethods) {
+		return false
+	}
+	if !cmp.Equal(in.URL, out.Url) {
+		return false
+	}
+	return true
+}
+
+func isProtocolDetailsUpToDate(in *svcapitypes.ProtocolDetails, out *svcsdk.ProtocolDetails) bool {
+	if !cmp.Equal(in.As2Transports, out.As2Transports) {
+		return false
+	}
+	if !cmp.Equal(in.PassiveIP, out.PassiveIp) {
+		return false
+	}
+	if !cmp.Equal(in.SetStatOption, out.SetStatOption) {
+		return false
+	}
+	if !cmp.Equal(in.TLSSessionResumptionMode, out.TlsSessionResumptionMode) {
+		return false
+	}
+	return true
+}
+
+func isCustomEndpointUpToDate(in *svcapitypes.CustomEndpointDetails, out *svcsdk.EndpointDetails) bool {
+	if !cmp.Equal(in.AddressAllocationIDs, out.AddressAllocationIds) {
+		return false
+	}
+	if !cmp.Equal(in.SecurityGroupIDs, out.SecurityGroupIds) {
+		return false
+	}
+	if !cmp.Equal(in.SubnetIDs, out.SubnetIds) {
+		return false
+	}
+	if !cmp.Equal(in.VPCEndpointID, out.VpcEndpointId) {
+		return false
+	}
+	if !cmp.Equal(in.VPCID, out.VpcId) {
+		return false
+	}
+	return true
+}
+
+func isWorkflowDetailsUpToDate(in *svcapitypes.WorkflowDetails, out *svcsdk.WorkflowDetails) bool {
+	if len(in.OnPartialUpload) != len(out.OnPartialUpload) || len(in.OnUpload) != len(out.OnUpload) {
+		return false
+	}
+
+	if len(in.OnPartialUpload) == 0 && len(in.OnUpload) == 0 {
+		return true
+	}
+
+	apiTypesSort := func(a *svcapitypes.WorkflowDetail, b *svcapitypes.WorkflowDetail) int {
+		return strings.Compare(*a.WorkflowID, *b.WorkflowID)
+	}
+	sdkSort := func(a *svcsdk.WorkflowDetail, b *svcsdk.WorkflowDetail) int {
+		return strings.Compare(*a.WorkflowId, *b.WorkflowId)
+	}
+	compareApiSdk := func(a *svcapitypes.WorkflowDetail, b *svcsdk.WorkflowDetail) bool {
+		return ptr.Deref(a.ExecutionRole, "") == ptr.Deref(b.ExecutionRole, "") && ptr.Deref(a.WorkflowID, "") == ptr.Deref(b.WorkflowId, "")
+	}
+
+	slices.SortFunc(in.OnPartialUpload, apiTypesSort)
+	slices.SortFunc(in.OnUpload, apiTypesSort)
+	slices.SortFunc(out.OnPartialUpload, sdkSort)
+	slices.SortFunc(out.OnUpload, sdkSort)
+
+	return slices.EqualFunc(in.OnPartialUpload, out.OnPartialUpload, compareApiSdk) && slices.EqualFunc(in.OnUpload, out.OnUpload, compareApiSdk)
 }

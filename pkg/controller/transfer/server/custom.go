@@ -68,5 +68,6 @@ func (c *customConnector) Connect(ctx context.Context, mg cpresource.Managed) (m
 	external.preObserve = preObserve
 	external.preDelete = preDelete
 	external.preCreate = preCreate
+	external.isUpToDate = isUpToDate
 	return external, nil
 }
